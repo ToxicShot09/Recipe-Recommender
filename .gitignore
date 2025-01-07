@@ -1,0 +1,11 @@
+# Ignore the full dataset
+full_dataset.csv
+
+# Ignore virtual environment directory
+venv/
+
+# Ignore the recommendations output file
+recipe_recommendations.txt
+
+# Ignore the recipe_data directory
+recipe_data/
