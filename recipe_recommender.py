@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import ast
 import re
 import kagglehub
@@ -10,7 +9,8 @@ from typing import List, Dict, Tuple, Optional
 import json
 from pathlib import Path
 import pickle
-from scipy import sparse
+from scipy import sparsez
+from annoy import AnnoyIndex
 
 class RecipeRecommender:
     def __init__(self, cache_dir: str = "recipe_data"):
@@ -25,6 +25,7 @@ class RecipeRecommender:
         self.tfidf_vectorizer = None
         self.user_preferences = {}
         self.cache_dir = cache_dir
+        self.annoy_index = None
         
         # Create cache directory if it doesn't exist
         os.makedirs(cache_dir, exist_ok=True)
@@ -218,31 +219,39 @@ class RecipeRecommender:
         
         return filtered_df
 
-    def get_ingredient_similarity(self, 
-                                available_ingredients: List[str], 
-                                n_recipes: int = 5) -> List[Dict]:
-        """Find recipes similar to available ingredients."""
-        # Convert ingredients list to space-separated string
+    def build_annoy_index(self):
+        """Build Annoy index for fast similarity search"""
+        n_features = self.tfidf_matrix.shape[1]
+        self.annoy_index = AnnoyIndex(n_features, 'angular')  # angular distance = cosine similarity
+        
+        # Add items to index
+        for i in range(self.tfidf_matrix.shape[0]):
+            self.annoy_index.add_item(i, self.tfidf_matrix[i].toarray()[0])
+        
+        # Build the index
+        self.annoy_index.build(10)  # 10 trees - more trees = better accuracy but slower build
+        
+    def get_ingredient_similarity(self, available_ingredients: List[str], n_recipes: int = 5) -> List[Dict]:
+        """Find recipes similar to available ingredients using Annoy"""
         ingredients_text = ' '.join(available_ingredients)
+        ingredients_vector = self.tfidf_vectorizer.transform([ingredients_text]).toarray()[0]
         
-        # Transform ingredients to TF-IDF vector
-        ingredients_vector = self.tfidf_vectorizer.transform([ingredients_text])
-        
-        # Calculate cosine similarity
-        similarities = cosine_similarity(ingredients_vector, self.tfidf_matrix)
-        
-        # Get top similar recipes
-        similar_indices = similarities[0].argsort()[-n_recipes:][::-1]
+        # Get approximate nearest neighbors
+        similar_indices = self.annoy_index.get_nns_by_vector(
+            ingredients_vector, 
+            n_recipes, 
+            include_distances=True
+        )
         
         recommendations = []
-        for idx in similar_indices:
+        for idx, distance in zip(similar_indices[0], similar_indices[1]):
+            similarity_score = 1 - (distance ** 2) / 2  # Convert angular distance to cosine similarity
             rec = {
                 'title': self.recipes_df.iloc[idx]['title'],
-                'similarity_score': similarities[0][idx],
+                'similarity_score': similarity_score,
                 'ingredients': self.recipes_df.iloc[idx]['ingredients'],
             }
             
-            # Add optional fields if they exist
             for field in ['directions', 'link', 'source']:
                 if field in self.recipes_df.columns:
                     rec[field] = self.recipes_df.iloc[idx][field]
@@ -269,6 +278,9 @@ class RecipeRecommender:
         temp_recommender.tfidf_matrix = temp_recommender.tfidf_vectorizer.fit_transform(
             filtered_recipes_df['clean_ingredients']
         )
+        
+        # Build the Annoy index before using it
+        temp_recommender.build_annoy_index()
         
         # Get recommendations from filtered dataset
         recommendations = temp_recommender.get_ingredient_similarity(
@@ -350,14 +362,14 @@ def main():
         
         # Example user preferences (can be modified)
         user_preferences = {
-            'dietary_restrictions': ['vegetarian'],
-            'cuisine_preference': 'indian',
-            'excluded_ingredients': ['mushrooms', 'bell pepper']
+            'dietary_restrictions': ['vegetarian', 'gluten-free'],
+            'cuisine_preference': 'thai',
+            'excluded_ingredients': ['peanuts']
         }
         recommender.set_user_preferences(user_preferences)
         
         # Example available ingredients (can be modified)
-        available_ingredients = ['tomatoes', 'onions', 'lentils', 'garlic', 'ginger']
+        available_ingredients = ['coconut milk', 'tofu', 'vegetables', 'lime']
         print("\nFinding recipes with ingredients:", available_ingredients)
         
         # Get recommendations
